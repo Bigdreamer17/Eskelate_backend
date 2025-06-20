@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends
-from app.models.schemas import SignUpIn, LoginIn, BaseResponse
+from app.models.schemas import SignUpIn, LoginIn, BaseResponse, TokenOut
 from app.core.security import hash_password, verify_password, create_access_token
 from app.db.supabase import get_supabase
 from supabase import Client
@@ -62,11 +62,28 @@ async def signup(payload: SignUpIn):
 
 @router.post("/login", response_model=BaseResponse)
 async def login(payload: LoginIn):
-    supabase = supabase()
-    user = supabase.table("User").select("*").eq("email", payload.email).maybe_single().execute().data
-    if not user:
+    supabase = get_supabase()               # ← get the cached client
+
+    # 1️⃣  Pull the user row by e‑mail
+    try:
+        resp = (
+            supabase.table("users")         # table is now lowercase
+            .select("*")
+            .eq("email", payload.email)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB read failed: {e}")
+
+    user = getattr(resp, "data", None)
+    if user is None:
         return BaseResponse(success=False, message="User not found", errors=["User not found"])
+
+    # 2️⃣  Verify password
     if not verify_password(payload.password, user["password"]):
         return BaseResponse(success=False, message="Incorrect password", errors=["Incorrect password"])
+
+    # 3️⃣  Issue JWT
     token = create_access_token({"id": user["id"], "role": user["role"]})
     return BaseResponse(success=True, message="Logged in", object=TokenOut(access_token=token).dict())
